@@ -202,6 +202,13 @@ model = microGPT(n_embd=384)
 m = model.to(device)
 # Print the number of parameters in the model
 print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+if device == 'cuda':
+    print("CUDA is available. Using GPU.")
+    print(f"CUDA Device: {torch.cuda.get_device_name(0)}")
+else:
+    print("CUDA is not available. Using CPU.")
+
 
 
 # create a PyTorch optimizer
