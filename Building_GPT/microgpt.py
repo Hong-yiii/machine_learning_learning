@@ -181,21 +181,27 @@ class microGPT(nn.Module):
         return logits, loss
 
     def generate(self, idx, max_new_tokens):
-        # idx is (B, T) array of indices in the current context
-        for _ in range(max_new_tokens):
-            # crop idx into last block size tokens (it can only take in blk size inputs)
-            # in other words, it should only get len(blocksize) inputs
-            idx_cond = idx[:,-block_size:]
-            # get the predictions
-            logits, loss = self(idx_cond)
-            # focus only on the last time step
-            logits = logits[:, -1, :] # becomes (B, C)
-            # apply softmax to get probabilities
-            probs = F.softmax(logits, dim=-1) # (B, C)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-            # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+        # Set the model to evaluation mode and disable gradients
+        self.eval()
+        with torch.no_grad():
+            for _ in tqdm(range(max_new_tokens), desc="Generating Tokens"):
+                # Crop idx into last block_size tokens
+                idx_cond = idx[:, -block_size:]
+                
+                # Get the predictions
+                logits, _ = self(idx_cond)
+                
+                # Focus only on the last time step
+                logits = logits[:, -1, :]  # Shape: (B, C)
+                
+                # Apply softmax to get probabilities
+                probs = F.softmax(logits, dim=-1)  # Shape: (B, C)
+                
+                # Sample from the distribution
+                idx_next = torch.multinomial(probs, num_samples=1)  # Shape: (B, 1)
+                
+                # Append sampled index to the running sequence
+                idx = torch.cat((idx, idx_next), dim=1)  # Shape: (B, T+1)
         return idx
 
 model = microGPT(n_embd=384)
@@ -214,22 +220,56 @@ else:
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-for iter in range(max_iters):
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
-    # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0 or iter == max_iters - 1:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+# Initialize lists to store loss values
+train_losses = []
+val_losses = []
+iterations = []
 
+# Create a tqdm progress bar
+with tqdm(range(max_iters), desc="Training", unit="iter") as pbar:
+    for iter in pbar:
 
-    # sample a batch of data
-    xb, yb = get_batch('train')
+        # Every eval_interval steps, evaluate the loss on train and val sets
+        if iter % eval_interval == 0 or iter == max_iters - 1:
+            losses = estimate_loss()
+            train_loss = losses['train']
+            val_loss = losses['val']
+            
+            # Append losses to the lists
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            iterations.append(iter)
 
-    # evaluate the loss
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+            # Update the progress bar description
+            pbar.set_postfix({
+                "Step": iter,
+                "Train Loss": f"{train_loss:.4f}",
+                "Val Loss": f"{val_loss:.4f}"
+            })
+
+        # Sample a batch of data
+        xb, yb = get_batch('train')
+
+        # Evaluate the loss
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+# After training, plot the losses
+plt.figure(figsize=(10, 5))
+plt.plot(iterations, train_losses, label='Train Loss')
+plt.plot(iterations, val_losses, label='Validation Loss')
+plt.xlabel('Iterations')
+plt.ylabel('Loss')
+plt.title('Training and Validation Loss Over Time')
+plt.legend()
+plt.savefig('training_plot.png')  # Save the plot to a file
+plt.close()  # Close the plot to free up resources
+print("Training plot saved as 'training_plot.png'.")
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
