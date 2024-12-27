@@ -61,47 +61,33 @@ def estimate_loss():
     model.train()
     return out
 
-# Attention Model
-class Head(nn.Module): 
-    # one head of self attention
+class Head(nn.Module):
+    """ one head of self-attention """
 
-    def __init__(self, head_size): 
+    def __init__(self, head_size):
         super().__init__()
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-        #since it is not a param, we assign it using register_buffer
-        self.dropout = nn.Dropout(dropout)
-    def forward(self, x):
-        B,T,C = x.shape
-        k = self.key(x) #(B,T,C)
-        q = self.query(x) #(B,T,C)
 
-        # computing the affinities
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # input of size (batch, time-step, channels)
+        # output of size (batch, time-step, head size)
+        B,T,C = x.shape
+        k = self.key(x)   # (B,T,hs)
+        q = self.query(x) # (B,T,hs)
+        # compute attention scores ("affinities")
         wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=-1) # (B, T, T)
         wei = self.dropout(wei)
-
         # perform the weighted aggregation of the values
         v = self.value(x) # (B,T,hs)
         out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
         return out
-
-class FeedForward(nn.Module): 
-    """ a simple linear layer followed by a non-linearity """
-    def __init__(self, n_embd):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(n_embd, 4 * n_embd),
-            nn.ReLU(),
-            nn.Linear(4 * n_embd, n_embd),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, x):
-        return self.net(x)
 
 class MultiHeadAttention(nn.Module):
     """ multiple heads of self-attention in parallel """
@@ -116,7 +102,22 @@ class MultiHeadAttention(nn.Module):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.dropout(self.proj(out))
         return out
-    
+
+class FeedFoward(nn.Module):
+    """ a simple linear layer followed by a non-linearity """
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
 class Block(nn.Module):
     """ Transformer block: communication followed by computation """
 
@@ -125,29 +126,27 @@ class Block(nn.Module):
         super().__init__()
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
-        self.ffwd = FeedForward(n_embd)
-        # implementing pre-norm formulation
+        self.ffwd = FeedFoward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x):
-        x = x + self.sa(self.ln1(x)) # Addition for gradients to flow through easier using residual connections
+        x = x + self.sa(self.ln1(x))
         x = x + self.ffwd(self.ln2(x))
         return x
 
-# microGPT Model
-class microGPT(nn.Module):
+class GPTLanguageModel(nn.Module):
 
-    def __init__(self, n_embd): 
+    def __init__(self):
         super().__init__()
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embd) #n_embed is the number of embedding dimensions 
-        # we also want to embed in the positions of token
-        self.position_embedding_table = nn.Embedding(block_size, n_embd) #embed from 0 to blksize - 1
+        # each token directly reads off the logits for the next token from a lookup table
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
-        self.ln_f = nn.LayerNorm(n_embd) #final Layer norm
-        self.lm_head = nn.Linear(n_embd, vocab_size) # language model head, maps back to vocab space
-        
-        # Initialize weights
+        self.ln_f = nn.LayerNorm(n_embd) # final layer norm
+        self.lm_head = nn.Linear(n_embd, vocab_size)
+
+        # better init, not covered in the original GPT video, but important, will cover in followup video
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -158,17 +157,16 @@ class microGPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-
-    def forward(self, idx, targets=None):   
+    def forward(self, idx, targets=None):
         B, T = idx.shape
 
         # idx and targets are both (B,T) tensor of integers
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C) matrix
-        x = tok_emb + pos_emb # note of broadcasting across Batch dim
-        x = self.blocks(x) 
-        x = self.ln_f(x)
-        logits = self.lm_head(x) # (B,T,vocab size)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
+        x = tok_emb + pos_emb # (B,T,C)
+        x = self.blocks(x) # (B,T,C)
+        x = self.ln_f(x) # (B,T,C)
+        logits = self.lm_head(x) # (B,T,vocab_size)
 
         if targets is None:
             loss = None
@@ -183,9 +181,8 @@ class microGPT(nn.Module):
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
-            # crop idx into last block size tokens (it can only take in blk size inputs)
-            # in other words, it should only get len(blocksize) inputs
-            idx_cond = idx[:,-block_size:]
+            # crop idx to the last block_size tokens
+            idx_cond = idx[:, -block_size:]
             # get the predictions
             logits, loss = self(idx_cond)
             # focus only on the last time step
@@ -198,11 +195,10 @@ class microGPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
-model = microGPT(n_embd=384)
+model = GPTLanguageModel()
 m = model.to(device)
-# Print the number of parameters in the model
+# print the number of parameters in the model
 print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
-
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -213,7 +209,6 @@ for iter in range(max_iters):
     if iter % eval_interval == 0 or iter == max_iters - 1:
         losses = estimate_loss()
         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-
 
     # sample a batch of data
     xb, yb = get_batch('train')
@@ -227,3 +222,4 @@ for iter in range(max_iters):
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+#open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
