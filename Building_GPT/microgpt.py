@@ -271,6 +271,12 @@ plt.savefig('training_plot.png')  # Save the plot to a file
 plt.close()  # Close the plot to free up resources
 print("Training plot saved as 'training_plot.png'.")
 
+# save the model 
+# Save the trained model's state_dict
+torch.save(model.state_dict(), 'microGPT_model.pth')
+print("Model saved as 'microGPT_model.pth'.")
+
+
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
